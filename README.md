@@ -289,6 +289,9 @@ the launcher's button (see above); they go to `~/.local/share/bbport/fsr4_411`
 (`BB_PACKAGE_FSR411=1` bundles a local `fsr4_411` into an AppImage for your own devices). On the Steam Deck pick the 1280×720 output (the
 game is 16:9; on the 1280×800 screen it gets thin bars).
 
+A native (non-Nix) build of the same image, for hosts whose glibc is newer than the target's, is
+[described below](#native-appimage-no-nix) (`bash packaging/appimage-native.sh`).
+
 **Adding the AppImage to Steam** (*Add a Non-Steam Game*) needs no options; the compatibility tool
 does not matter. (Steam preloads its overlay into every non-Steam game; the AppImage removes it
 before its own programs start, so the Steam overlay is not shown in the game.) Where Steam
@@ -357,6 +360,40 @@ The launcher's *Online* page turns it on (`BB_ONLINE=1`): messages, bloodstains 
 from The Hunter's Dream, bells and summons go through a shadNet server (`srv.shadps4.net:31313` by
 default) with a shadNet account (Online ID and password). Offline the module is never loaded; a
 build without it plays offline only.
+
+### Native AppImage (no Nix)
+
+`packaging/appimage-native.sh` builds the same `dist/Bloodborne-bbport-x86_64.AppImage` (~154 MB)
+without Nix, with the host's `appimagetool`; it needs a prior `bash build.sh` (`out/bb-probe` and
+`out/gpu/libbbgpu.so`). It exists for hosts whose glibc (2.44) is newer than the target's
+(SteamOS/Steam-Deck-class devices: 2.41): the image bundles a **glibc 2.44 runtime and loader** and
+starts every port binary through it, so it does not depend on the host's glibc. It also bundles the
+app-private shared libraries and **libadwaita** (a Debian 13 build, matching the target's GTK 4.18).
+It relies on the host for the graphics and GUI stack: **Mesa/RADV and the Vulkan loader,
+X11/Wayland, GTK4 + PyGObject + gdk-pixbuf and fonts**. The Nix pipeline
+(`bash packaging/appimage.sh`) instead brings its own Mesa/GTK4/Python closure.
+
+As with the Nix package, **no game files are included**: the 30 GB decrypted dump stays a sidecar
+folder. `AppRun` finds it automatically, in order `<AppImage dir>/gamedata/CUSA03173`,
+`<AppImage dir>/CUSA03173`, `<AppDir>/usr/share/CUSA03173`; `BB_GAME_DIR` overrides the search.
+Running the image opens the GTK4 launcher, and `--play` starts the game directly without it. Data
+and settings live in `~/.local/share/bbport` (`BB_DATA_DIR`).
+
+The installed `appimagetool` is an older build without zstd/DwarFS support, so the image is
+gzip-compressed.
+
+**Steam Deck / Legion Go S:** copy the AppImage and a `gamedata/CUSA03173/` folder together (for
+example under `~/Games/bloodborne/`) and `chmod +x` the AppImage. Add it as a **non-Steam game with
+no compatibility tool** — it is native, so do not force Proton. Where FUSE is unavailable or in a
+sandbox, launch it with
+
+```
+TMPDIR=$HOME/.cache APPIMAGE_EXTRACT_AND_RUN=1 NO_CLEANUP=1 %command%
+```
+
+and append ` --play` after `%command%` to skip the launcher. Keep the game on internal storage; use
+exFAT, ext4 or a network transfer to move it — FAT32 caps files at 4 GiB, too small for the 30 GB
+sidecar.
 
 ## Repository layout
 

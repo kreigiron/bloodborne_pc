@@ -40,6 +40,27 @@ DATA_DIR = Path(os.environ.get("BB_DATA_DIR", PORT_DIR))
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "bbport-launcher"
 CONFIG_FILE = CONFIG_DIR / "settings.json"
 MAX_LOG_LINES = 5000
+
+
+def detected_game_dir():
+    """The sidecar game folder AppRun found next to the AppImage (BB_GAME_DIR), if any.
+
+    A packaged build starts with no saved game folder; AppRun exports BB_GAME_DIR when a CUSA03173
+    folder sits next to the AppImage (or in the image). Source and Nix builds have their default
+    next to the checkout instead and never set it.
+    """
+    if not PACKAGED:
+        return ""
+    return os.environ.get("BB_GAME_DIR", "")
+
+
+def resolved_game_dir(settings):
+    """The game folder in effect: the saved one, else the AppImage's sidecar (BB_GAME_DIR), else the
+    saved (empty) value, so a real saved folder always wins."""
+    saved = settings.get("game_dir") or ""
+    return Path(saved).expanduser() if saved else Path(detected_game_dir()).expanduser()
+
+
 # The memory model (run.sh: BB_PC_MODEL): "auto" leaves it to the GPU (the new one on AMD, the
 # 0.3 one elsewhere), or either by hand. The new one goes through the layer's memory module on
 # every GPU (no sparse binding of the game's memory; BB_LAYER_MEMORY=0: AMD's sparse arena).
@@ -290,7 +311,7 @@ def online_module():
 def game_environment(s):
     """Environment for run.sh from the launcher settings."""
     env = dict(os.environ)
-    env["BB_GAME_DIR"] = str(Path(s["game_dir"]).expanduser())
+    env["BB_GAME_DIR"] = str(resolved_game_dir(s))
     if s["user_dir"]:
         env["BB_USER_DIR"] = s["user_dir"]
     env["BB_MODS_DIR"] = str(Path(s.get("mods_dir") or DATA_DIR / "mods").expanduser())
@@ -429,11 +450,22 @@ CONTROLS = [
 ]
 
 
+def staged_tool_command(tool, *arguments):
+    """The command line for a staged port binary: a plain invocation.
+
+    The native AppImage's binaries carry the bundled glibc loader as their PT_INTERP
+    (packaging/appimage-native.sh), so the kernel starts them through it; routing them through an
+    explicit loader instead deadlocks the guest thread. Source and Nix builds invoke them plainly
+    too, so no command here uses ld.so directly."""
+    return [str(tool), *arguments]
+
+
 def connected_gamepads():
     """(GUID, name) of the connected gamepads (bb-gpu-capabilities --gamepads), [] if unknown."""
     tool = PORT_DIR / ("bin" if PACKAGED else "out") / "bb-gpu-capabilities"
     try:
-        run = subprocess.run([str(tool), "--gamepads"], capture_output=True, text=True, timeout=5)
+        run = subprocess.run(staged_tool_command(tool, "--gamepads"),
+                             capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return []
     return [tuple(line.split("\t", 1)) for line in run.stdout.splitlines() if "\t" in line]
@@ -444,7 +476,8 @@ def connected_displays():
     The value is the monitor's name, or its number when two monitors share a name."""
     tool = PORT_DIR / ("bin" if PACKAGED else "out") / "bb-gpu-capabilities"
     try:
-        run = subprocess.run([str(tool), "--displays"], capture_output=True, text=True, timeout=5)
+        run = subprocess.run(staged_tool_command(tool, "--displays"),
+                             capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return []
     rows = [line.split("\t") for line in run.stdout.splitlines() if line.count("\t") == 2]
@@ -829,7 +862,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         GLib.idle_add(lambda: self.build() and False)
 
     def game_dir(self):
-        return Path(self.settings["game_dir"]).expanduser()
+        return resolved_game_dir(self.settings)
 
     def user_dir(self):
         return Path(self.settings["user_dir"]).expanduser() if self.settings["user_dir"] \
@@ -913,8 +946,9 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def update_game_status(self):
         path = self.game_dir()
-        ok = bool(self.settings["game_dir"]) and (path / "eboot.bin").is_file()
-        self.game_row.set_subtitle(str(path) if self.settings["game_dir"] else tr("не выбрана"))
+        chosen = bool(self.settings["game_dir"] or detected_game_dir())
+        ok = chosen and (path / "eboot.bin").is_file()
+        self.game_row.set_subtitle(str(path) if chosen else tr("не выбрана"))
         # Other versions of the game start and then crash in its code (issues #7, #13, #14).
         problem = self.game_problem(path) if ok else None
         if not ok:
@@ -960,7 +994,7 @@ class LauncherWindow(Adw.ApplicationWindow):
     def assign_control(self, kind, name):
         tool = PORT_DIR / ("bin" if PACKAGED else "out") / "bb-gpu-capabilities"
         try:
-            process = Gio.Subprocess.new([str(tool), "--read-input", kind],
+            process = Gio.Subprocess.new(staged_tool_command(tool, "--read-input", kind),
                                          Gio.SubprocessFlags.STDOUT_PIPE)
         except GLib.Error as error:
             self.toasts.add_toast(Adw.Toast(title=tr("Не удалось запустить: {}").format(error.message)))
@@ -1695,7 +1729,7 @@ class LauncherApp(Adw.Application):
 def play():
     """--play: the game with the saved settings, no window (Steam Deck game mode)."""
     settings = load_settings()
-    if not (Path(settings["game_dir"]).expanduser() / "eboot.bin").is_file():
+    if not (resolved_game_dir(settings) / "eboot.bin").is_file():
         print("bbport: choose the game folder in the launcher first", file=sys.stderr)
         return 1
     os.chdir(PORT_DIR)

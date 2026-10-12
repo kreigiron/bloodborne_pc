@@ -11,6 +11,20 @@ if [[ ${1:-} == --software ]]; then
     if [[ -z ${VK_DRIVER_FILES:-} ]]; then echo 'Lavapipe not found; set VK_DRIVER_FILES.' >&2; exit 1; fi
     export VK_LOADER_LAYERS_DISABLE='~implicit~'
 fi
+# Optional explicit-loader hook: BB_LD names a dynamic loader and BB_LD_LIBRARY_PATH its search
+# path; when set, every port binary is started through them. The native AppImage no longer sets
+# them: its binaries carry the bundled loader as PT_INTERP (packaging/appimage-native.sh) and the
+# kernel starts them, because explicit-loader invocation deadlocks the guest thread. The hook stays
+# for a caller that must force a loader; source runs and the Nix package leave it unset, where the
+# prefix below expands to nothing and the commands are run exactly as before.
+# The "${bb_ld[@]}" expansions below need bash >= 4.4: earlier versions abort on an empty array
+# under `set -u`.
+bb_ld=()
+if [[ -n ${BB_LD:-} ]]; then
+    bb_ld=("$BB_LD")
+    # Only pass --library-path when it has a value (avoids `--library-path ""`).
+    [[ -n ${BB_LD_LIBRARY_PATH:-} ]] && bb_ld+=(--library-path "$BB_LD_LIBRARY_PATH")
+fi
 # BB_PREBUILT=1 (packaged builds, the AppImage): out/bb-probe and its GPU library are installed
 # next to this script; nothing is built and no nix-shell is needed.
 # BB_DATA_DIR: writable directory for the generated files (out/), saves (user/) and bbport.ini;
@@ -109,7 +123,7 @@ if [[ -n ${scaled_output:-} ]]; then
         done < "$BB_CONFIG"
     fi
     if [[ $live == auto ]]; then
-        live=$("$caps" --live-resolution 2> >(while IFS= read -r line; do
+        live=$("${bb_ld[@]}" "$caps" --live-resolution 2> >(while IFS= read -r line; do
             [[ $line == *MANGOHUD* ]] || printf '%s\n' "$line"; done >&2)) || live=0
     fi
     [[ $live == 1 ]] || live=0
@@ -143,7 +157,7 @@ export BB_PREUPLOAD=${BB_PREUPLOAD:-1}
 # The game's GPU (vendor ID and name), for the choices below that depend on it.
 gpu_vendor= gpu_name=
 if [[ -z ${BB_PC_MODEL:-} || ( ${BB_AUTO_NOHIZ:-1} != 0 && -z ${RADV_DEBUG:-} ) ]]; then
-    IFS=$'\t' read -r gpu_vendor gpu_name < <("$caps" --device 2> /dev/null) || true
+    IFS=$'\t' read -r gpu_vendor gpu_name < <("${bb_ld[@]}" "$caps" --device 2> /dev/null) || true
 fi
 # Memory model left to the port: the new one on AMD (0x1002), the 0.3 one elsewhere (NVIDIA's
 # path through the memory module is still being measured with testers).
@@ -230,7 +244,7 @@ if [[ ${BB_ONLINE:-0} == 1 && -f scripts/online.py ]]; then
 fi
 probe_args=("$out/boot-linked.bin" --content-profile "$out/content.bin" --patches "$out/patches.bin" --app0 "$game" --user "${BB_USER_DIR:-$data/user}" --timeout "${BB_TIMEOUT:-0}" "$@")
 if [[ -n ${mod_game:-} ]]; then
-    "$probe" "${probe_args[@]}" &
+    "${bb_ld[@]}" "$probe" "${probe_args[@]}" &
     mod_pid=$!
     trap 'kill -TERM "$mod_pid" 2>/dev/null || true' TERM INT
     mod_status=0
@@ -239,4 +253,4 @@ if [[ -n ${mod_game:-} ]]; then
     if kill -0 "$mod_pid" 2>/dev/null; then wait "$mod_pid" || mod_status=$?; fi
     exit "$mod_status"
 fi
-exec "$probe" "${probe_args[@]}"
+exec "${bb_ld[@]}" "$probe" "${probe_args[@]}"
