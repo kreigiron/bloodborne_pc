@@ -160,6 +160,8 @@ bash build.sh                        # builds out/bb-probe and out/gpu/libbbgpu.
 BB_GAME_DIR=/path/to/CUSA03173 bash run.sh
 ```
 
+`bash scripts/clean.sh [--deep]` removes the generated build artifacts (`out/`, `dist/`, `pgo/`, `__pycache__/`, the FSR shader folders); `--deep` also removes `user/` and settings.
+
 or the launcher (pick the game folder, settings, *Start*):
 
 ```bash
